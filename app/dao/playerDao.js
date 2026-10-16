@@ -2,6 +2,7 @@ let pomelo = require("pomelo");
 let playerDao = module.exports;
 let mysql = pomelo.app.get("sqlHelper");
 let financialInquiriesDao = require('./financialInquiriesDao');
+const { toDateYMD } = require('../util/utils');
 
 playerDao.addPlayer2 = async function (msg) {
     try {
@@ -1152,16 +1153,17 @@ playerDao.MoveDataToLogGame = async function() {
         const recordKeys = records.map(record => record.Id);
         const processedRows = await mysql.query(
             "bjl",
-            "SELECT Id, statistics_date, points_processed FROM gameshist WHERE Id IN (?) AND closed = 1",
+            "SELECT * FROM gameshist WHERE Id IN (?) AND closed = 1 ORDER BY Id",
             [recordKeys]
         );
-        const processedKeys = new Set(
-            (processedRows || [])
-                .filter(record => Number(record.points_processed) === 1)
-                .map(record => `${record.Id}\u0000${new Date(record.statistics_date).getTime()}`)
+        const candidateKeys = new Set(
+            records.map(record => `${record.Id}\u0000${new Date(record.statistics_date).getTime()}`)
         );
-        records = records.filter(record =>
-            processedKeys.has(`${record.Id}\u0000${new Date(record.statistics_date).getTime()}`)
+        // 积分补偿及并发开奖可能已更新 points，必须搬运重新读取的完整记录。
+        // 不能只检查最新状态后，继续插入发积分前的旧快照。
+        records = (processedRows || []).filter(record =>
+            Number(record.points_processed) === 1 &&
+            candidateKeys.has(`${record.Id}\u0000${new Date(record.statistics_date).getTime()}`)
         );
 
         if (records.length === 0) return;
@@ -1442,13 +1444,17 @@ playerDao.updateDailyPointsByGameId = async function (
         }
 
         /*
-         * 按“群 + userId”合并本批次流水。
+         * 按“群 + userId + 营业日”合并本批次流水。
          *
          * 同一玩家同一群一次迁移了多条记录时，
-         * 先合计，再一次性写入数据库。
+         * 按营业日先后处理，余数仍由同一个 points_group_user 账户结转。
+         * 防止跨日补偿将多天积分全部记到最后一条记录的营业日。
          */
         const groupMap = {};
 
+        filteredRecords.sort((a, b) =>
+            String(toDateYMD(a.statistics_date)).localeCompare(String(toDateYMD(b.statistics_date)))
+        );
         for (const record of filteredRecords) {
             const userId = Number(record.userId);
             const groupNickname = record.group_nickname;
@@ -1462,7 +1468,7 @@ playerDao.updateDailyPointsByGameId = async function (
                 continue;
             }
 
-            const key = groupNickname + "#" + userId;
+            const key = JSON.stringify([groupNickname, userId, toDateYMD(record.statistics_date)]);
 
             if (!groupMap[key]) {
                 const user = userMap[String(userId)];

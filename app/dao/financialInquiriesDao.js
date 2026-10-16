@@ -2,6 +2,7 @@ let pomelo = require("pomelo");
 let dao = module.exports;
 let mysql = pomelo.app.get("sqlHelper");
 const utils = require("../util/utils");
+const settledRecordsSql = require('./settledRecordsSql');
 
 const BET_TYPE_FIELDS = {
     '庄': 'z',
@@ -292,7 +293,7 @@ dao.htPlayerDetailsQuery = async function (msg) {
 
         // ================= 分页 =================
         let page = Math.max(1, parseInt(msg.currentPage) || 1);
-        let pageSize = Math.min(200, parseInt(msg.pageSize) || 20);
+        let pageSize = Math.max(1, Math.min(200, parseInt(msg.pageSize) || 20));
         let offset = (page - 1) * pageSize;
 
 
@@ -317,6 +318,7 @@ dao.htPlayerDetailsQuery = async function (msg) {
 
 
         msg.startTime = utils.toDateYMD(msg.startTime);
+        msg.endTime = utils.toDateYMD(msg.endTime);
 
         where += `
             AND g.statistics_date BETWEEN ? AND ?
@@ -419,13 +421,12 @@ dao.htPlayerDetailsQuery = async function (msg) {
 
 
                 COALESCE(
-                    u.username,
-                    g.userName
+                    MAX(u.username), MAX(g.userName)
                 ) AS username,
 
 
                 COALESCE(
-                    u.reference_name,
+                    MAX(u.reference_name),
                     ''
                 ) AS reference_name,
 
@@ -450,10 +451,7 @@ dao.htPlayerDetailsQuery = async function (msg) {
                 -- 庄闲盈利
                 COALESCE(
                     SUM(
-                        CASE
-                            WHEN g.x > 0 OR g.z > 0 THEN g.yl
-                            ELSE 0
-                        END
+                        COALESCE(g.z_yl, 0) + COALESCE(g.x_yl, 0)
                     ),
                     0
                 ) AS zx_yl,
@@ -462,13 +460,13 @@ dao.htPlayerDetailsQuery = async function (msg) {
                 -- 三宝盈利
                 COALESCE(
                     SUM(
-                        g.zd_yl +
-                        g.xd_yl +
-                        g.h_yl +
-                        g.l_yl +
-                        g.k_yl +
-                        g.m_yl +
-                        g.q_yl
+                        COALESCE(g.zd_yl, 0) +
+                        COALESCE(g.xd_yl, 0) +
+                        COALESCE(g.h_yl, 0) +
+                        COALESCE(g.l_yl, 0) +
+                        COALESCE(g.k_yl, 0) +
+                        COALESCE(g.m_yl, 0) +
+                        COALESCE(g.q_yl, 0)
                     ),
                     0
                 ) AS sb_yl,
@@ -486,7 +484,7 @@ dao.htPlayerDetailsQuery = async function (msg) {
                 ) AS total_points
 
 
-            FROM gameshist_record g
+            FROM ${settledRecordsSql} g
 
 
             LEFT JOIN user u
@@ -678,23 +676,20 @@ dao.htPlayerDetailsQuery = async function (msg) {
 
             COALESCE(
                 SUM(
-                    CASE
-                        WHEN g.x > 0 OR g.z > 0 THEN g.yl
-                        ELSE 0
-                    END
+                    COALESCE(g.z_yl, 0) + COALESCE(g.x_yl, 0)
                 ),
                 0
             ) zx_yl,
 
 
             SUM(
-                g.zd_yl+
-                g.xd_yl+
-                g.h_yl+
-                g.l_yl+
-                g.k_yl+
-                g.m_yl+
-                g.q_yl
+                COALESCE(g.zd_yl, 0)+
+                COALESCE(g.xd_yl, 0)+
+                COALESCE(g.h_yl, 0)+
+                COALESCE(g.l_yl, 0)+
+                COALESCE(g.k_yl, 0)+
+                COALESCE(g.m_yl, 0)+
+                COALESCE(g.q_yl, 0)
             ) sb_yl,
 
 
@@ -704,7 +699,7 @@ dao.htPlayerDetailsQuery = async function (msg) {
             SUM(g.points) total_points
 
 
-        FROM gameshist_record g
+        FROM ${settledRecordsSql} g
 
 
         LEFT JOIN user u
@@ -734,7 +729,7 @@ dao.htPlayerDetailsQuery = async function (msg) {
         (
             SELECT g.userId
 
-            FROM gameshist_record g
+            FROM ${settledRecordsSql} g
 
             LEFT JOIN user u
             ON u.Id=g.userId
@@ -762,23 +757,20 @@ dao.htPlayerDetailsQuery = async function (msg) {
 
             COALESCE(
                 SUM(
-                    CASE
-                        WHEN g.x > 0 OR g.z > 0 THEN g.yl
-                        ELSE 0
-                    END
+                    COALESCE(g.z_yl, 0) + COALESCE(g.x_yl, 0)
                 ),
                 0
             ) total_zx_yl,
 
 
             SUM(
-                g.zd_yl+
-                g.xd_yl+
-                g.h_yl+
-                g.l_yl+
-                g.k_yl+
-                g.m_yl+
-                g.q_yl
+                COALESCE(g.zd_yl, 0)+
+                COALESCE(g.xd_yl, 0)+
+                COALESCE(g.h_yl, 0)+
+                COALESCE(g.l_yl, 0)+
+                COALESCE(g.k_yl, 0)+
+                COALESCE(g.m_yl, 0)+
+                COALESCE(g.q_yl, 0)
             ) total_sb_yl,
 
 
@@ -788,7 +780,7 @@ dao.htPlayerDetailsQuery = async function (msg) {
             SUM(g.points) total_points
 
 
-        FROM gameshist_record g
+        FROM ${settledRecordsSql} g
 
 
         LEFT JOIN user u
@@ -1218,7 +1210,7 @@ dao.total_gameshist_day = async function(msg = {}){
         const sourceConditions = [];
         const sourceArgs = [];
 
-        // 开奖时按群和营业日刷新，定时任务只传最新营业日；无参数调用仍支持全量校准。
+        // 显式指定营业日时允许补偿历史汇总；无参数定时调用只刷新各群当前营业日。
         if (groupNickname) {
             sourceConditions.push('src.group_nickname = ?');
             sourceArgs.push(groupNickname);
@@ -1313,7 +1305,7 @@ dao.total_gameshist_day = async function(msg = {}){
                   )
             ) g
             LEFT JOIN group_chat_setup gcs ON g.group_nickname = gcs.group_nickname
-            WHERE g.statistics_date = gcs.statistics_date
+            ${statisticsDate ? '' : 'WHERE g.statistics_date = gcs.statistics_date'}
             GROUP BY stat_date, group_nickname, g.userId  -- ✅ 不再需要 JOIN user
 
             ON DUPLICATE KEY UPDATE

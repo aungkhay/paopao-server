@@ -2,6 +2,7 @@ let pomelo = require("pomelo");
 let dao = module.exports;
 let mysql = pomelo.app.get("sqlHelper");
 const utils = require("../util/utils");
+const settledRecordsSql = require('./settledRecordsSql');
 
 dao.addAgent = async function(playerName, parentAgentName){
     try{
@@ -192,8 +193,8 @@ dao.getMember = async function(msg){
 
 dao.getMemberDetails = async function(msg){
     try {
-        let page = Number(msg.page || msg.currentPage) || 1;
-        let pageSize = Math.max(1, Math.min(500, Number(msg.pageSize) || 20));
+        let page = Math.max(1, parseInt(msg.page || msg.currentPage) || 1);
+        let pageSize = Math.max(1, Math.min(500, parseInt(msg.pageSize) || 20));
         let offset = (page - 1) * pageSize;
 
         const agentName = msg.agent_name;
@@ -206,15 +207,15 @@ dao.getMemberDetails = async function(msg){
             };
         }
         const startTime = utils.toDateYMD(msg.startTime);
-        const endTime = msg.endTime;
+        const endTime = utils.toDateYMD(msg.endTime);
 
         // 1. 构建流水表子查询的 WHERE 条件
         let gWhere = " WHERE 1=1 ";
         const gArgs = [];
-        gWhere += " AND ghd.stat_date BETWEEN ? AND ? ";
+        gWhere += " AND ghd.statistics_date BETWEEN ? AND ? ";
         gArgs.push(startTime, endTime);
 
-        if (groupNick) {
+        if (groupNick && groupNick !== '全部') {
             gWhere += " AND ghd.group_nickname = ? ";
             gArgs.push(groupNick);
         }
@@ -224,13 +225,15 @@ dao.getMemberDetails = async function(msg){
             (SELECT 
                 ghd.userId AS userId,
                 MAX(ghd.group_nickname) AS group_nickname, 
-                IFNULL(SUM(ghd.z_yl + ghd.x_yl), 0) AS total_zx_yl,
-                IFNULL(SUM(ghd.zd_yl + ghd.xd_yl + ghd.h_yl + ghd.m_yl + ghd.l_yl + ghd.k_yl + ghd.q_yl), 0) AS total_sb_yl,
+                IFNULL(SUM(COALESCE(ghd.z_yl, 0) + COALESCE(ghd.x_yl, 0)), 0) AS total_zx_yl,
+                IFNULL(SUM(COALESCE(ghd.zd_yl, 0) + COALESCE(ghd.xd_yl, 0) + COALESCE(ghd.h_yl, 0) + COALESCE(ghd.m_yl, 0) + COALESCE(ghd.l_yl, 0) + COALESCE(ghd.k_yl, 0) + COALESCE(ghd.q_yl, 0)), 0) AS total_sb_yl,
                 IFNULL(SUM(ghd.xml_sb), 0) AS total_xml_sb,
                 IFNULL(SUM(ghd.xml_zx), 0) AS total_xml_zx,
                 IFNULL(SUM(ghd.yxxz), 0) AS total_yxxz,
                 IFNULL(SUM(ghd.points), 0) AS daily_points
-            FROM gameshist_record_day ghd
+            -- daily_points 沿用返回字段名，含义为查询营业日期间累计发放积分。
+            -- 与 user 发积分同源；兑换、清零、撤销兑换均不改动这个累计值。
+            FROM ${settledRecordsSql} ghd
             ${gWhere}
             GROUP BY ghd.userId
             ) agg
@@ -242,7 +245,7 @@ dao.getMemberDetails = async function(msg){
         // 3. 用户表过滤条件
         let userWhere = ` WHERE u.is_virtual = 0 AND u.reference_name IS NOT NULL `;
         const userArgs = [];
-        if (agentName) {
+        if (agentName && agentName !== '全部') {
             userWhere += ` AND u.reference_name = ? `;
             userArgs.push(agentName);
         }
